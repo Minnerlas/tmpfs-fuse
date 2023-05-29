@@ -601,6 +601,20 @@ int fs_readlink(const char *path, char *buf, size_t bufsz) {
 	return 0;
 }
 
+int fs_utimens(const char *path, const struct timespec tv[2],
+		struct fuse_file_info *fi) {
+	(void)fi;
+
+	struct fs_entry *en = fs_find_entry(&fs_root, path);
+	if (!en)
+		return -ENOENT;
+
+	en->st.st_atime = tv->tv_sec;
+	en->st.st_mtime = tv->tv_sec;
+
+	return 0;
+}
+
 // int fs_fallocate(const char *path, int mode, off_t offset, off_t len,
 // 		struct fuse_file_info *fi) {
 // 	(void)fi;

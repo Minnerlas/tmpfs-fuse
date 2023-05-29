@@ -67,5 +67,7 @@ void fs_destroy(void *private_data);
 int fs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi);
 int fs_symlink(const char *target, const char *path);
 int fs_readlink(const char *path, char *buf, size_t bufsz);
+int fs_utimens(const char *path, const struct timespec tv[2],
+		struct fuse_file_info *fi);
 
 #endif /* FS_H */

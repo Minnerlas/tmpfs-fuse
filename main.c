@@ -16,6 +16,7 @@ static struct fuse_operations fs_operations = {
 	.chown = fs_chown,
 	.symlink = fs_symlink,
 	.readlink = fs_readlink,
+	.utimens = fs_utimens,
 };
 
 int main(int argc, char *argv[]) {
