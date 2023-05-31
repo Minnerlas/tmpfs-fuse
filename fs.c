@@ -46,6 +46,10 @@ void *xrealloc_(void *ptr, size_t sz, char *file, int line) {
 #define XREALLOC(ptr, sz) xrealloc_((ptr), (sz), __FILE__, __LINE__)
 #endif
 
+#ifndef XFREE
+#define XFREE free
+#endif
+
 struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid, mode_t mode) {
 	time_t now = time(NULL);
 	struct fs_entry ret = {
@@ -209,7 +213,7 @@ struct fs_entry *fs_find_parent(struct fs_entry *root, const char *path) {
 
 	if (dir && dir->type == FS_DIR) ret = dir;
 
-	free(tpath);
+	free(tpath); /* NODE: stdup uses malloc, not XMALLOC */
 	return ret;
 }
 
@@ -233,7 +237,7 @@ void fs_resize_file(struct fs_entry *en, size_t newlen) {
 
 	if (newlen > fl->cap) {
 		newcap = 4 * fl->cap / 3 < newlen ? newlen : 4 * fl->cap / 3;
-		ptr = fl->buf ? realloc(fl->buf, newcap) : malloc(newcap);
+		ptr = fl->buf ? XREALLOC(fl->buf, newcap) : XMALLOC(newcap);
 		ASSERT(ptr);
 		memset(ptr + fl->cap, 0, newcap - fl->cap);
 	}
@@ -278,7 +282,7 @@ void fs_free_entry(struct fs_entry *en) {
 	switch (en->type) {
 		case FS_FILE:
 		case FS_SYMLINK:
-			free(en->f.buf);
+			XFREE(en->f.buf);
 			en->f.buf = NULL;
 			en->f.len = en->f.cap = 0;
 			break;
@@ -290,7 +294,7 @@ void fs_free_entry(struct fs_entry *en) {
 				HASH_ITER(hh, en->dir.direntries, cur, t) {
 					HASH_DEL(en->dir.direntries, cur);
 					fs_free_entry(cur);
-					free(cur);
+					XFREE(cur);
 				}
 			}
 			break;
@@ -359,11 +363,11 @@ int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 		char *filen = basename(tpath);
 		DEBUG_LOG("Create '%s' '%s' '%s'\n", path, filen,
 				dir->name);
-		file = malloc(sizeof(*file));
+		file = XMALLOC(sizeof(*file));
 		ASSERT(file);
 		*file = fs_new_file(filen, getuid(), getgid(), mode);
 
-		free(tpath);
+		free(tpath); /* NODE: stdup uses malloc, not XMALLOC */
 	}
 
 	fs_add_entry(dir, file);
@@ -451,10 +455,10 @@ int fs_unlink(const char *path) {
 	en->f.len = 0;
 	en->st.st_size = 0;
 
-	free(ptr);
+	XFREE(ptr);
 
 	fs_delete_entry(dir, en);
-	free(en);
+	XFREE(en);
 
 	return 0;
 }
@@ -469,7 +473,7 @@ int fs_rmdir(const char *path) {
 	char *fname = basename(pathcopy);
 
 	struct fs_entry *en = fs_get_entry(dir, fname);
-	free(pathcopy);
+	free(pathcopy); /* NOTE: stdup uses malloc, not XMALLOC */
 	if (!en)
 		return -ENOENT;
 
@@ -477,7 +481,7 @@ int fs_rmdir(const char *path) {
 		return -ENOTDIR;
 
 	fs_delete_entry(dir, en);
-	free(en);
+	XFREE(en);
 
 	return 0;
 }
@@ -496,10 +500,10 @@ int fs_mkdir(const char *path, mode_t mode) {
 	ASSERT(pathcopy);
 	char *fname = basename(pathcopy);
 
-	struct fs_entry *en = malloc(sizeof(*en));
+	struct fs_entry *en = XMALLOC(sizeof(*en));
 	ASSERT(en);
 	*en = fs_new_dir(fname, getuid(), getgid(), mode);
-	free(pathcopy);
+	free(pathcopy); /* NOTE: stdup uses malloc, not XMALLOC */
 
 	fs_add_entry(dir, en);
 
@@ -572,11 +576,11 @@ int fs_symlink(const char *target, const char *path) {
 		char *filen = basename(tpath);
 		DEBUG_LOG("Symlink '%s' '%s' '%s'\n", path, filen,
 				dir->name);
-		file = malloc(sizeof(*file));
+		file = XMALLOC(sizeof(*file));
 		ASSERT(file);
 		*file = fs_new_symlink(filen, getuid(), getgid(), 0755);
 
-		free(tpath);
+		free(tpath); /* NOTE: stdup uses malloc, not XMALLOC */
 	}
 
 	size_t targetlen = strlen(target) + 1;
