@@ -13,6 +13,7 @@
 #include "uthash/src/uthash.h"
 
 #define MAX_PATH_SEG 255
+#define FS_BSIZE 4096
 
 struct fs_entry;
 
@@ -69,5 +70,6 @@ int fs_symlink(const char *target, const char *path);
 int fs_readlink(const char *path, char *buf, size_t bufsz);
 int fs_utimens(const char *path, const struct timespec tv[2],
 		struct fuse_file_info *fi);
+int fs_statfs(const char *path, struct statvfs *stat);
 
 #endif /* FS_H */

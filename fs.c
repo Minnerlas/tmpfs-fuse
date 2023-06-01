@@ -50,13 +50,16 @@ void *xrealloc_(void *ptr, size_t sz, char *file, int line) {
 #define XFREE free
 #endif
 
+#define DIVRNDUP(a, b) (((a) + ((b) - 1)) / (b))
+
 static inline struct timespec get_time() {
 	struct timespec tp = {0};
 	ASSERT(clock_gettime(CLOCK_REALTIME, &tp) == 0);
 	return tp;
 }
 
-struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid, mode_t mode) {
+static inline struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid,
+		mode_t mode) {
 	struct timespec now = get_time();
 
 	struct fs_entry ret = {
@@ -66,6 +69,7 @@ struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid, mode_t mode) {
 			.st_mode = S_IFDIR | mode,
 			.st_nlink = 2,
 			.st_size = 4096,
+			.st_blksize = FS_BSIZE,
 
 			.st_ctim = now,
 			.st_atim = now,
@@ -80,7 +84,8 @@ struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid, mode_t mode) {
 	return ret;
 }
 
-struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid, mode_t mode) {
+static inline struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid,
+		mode_t mode) {
 	struct timespec now = get_time();
 
 	struct fs_entry ret = {
@@ -89,7 +94,7 @@ struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid, mode_t mode) {
 			.st_gid = gid,
 			.st_mode = S_IFREG | mode,
 			.st_nlink = 1,
-			.st_blksize = 4096,
+			.st_blksize = FS_BSIZE,
 
 			.st_ctim = now,
 			.st_atim = now,
@@ -104,7 +109,8 @@ struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid, mode_t mode) {
 	return ret;
 }
 
-struct fs_entry fs_new_symlink(char *name, uid_t uid, gid_t gid, mode_t mode) {
+static inline struct fs_entry fs_new_symlink(char *name, uid_t uid, gid_t gid,
+		mode_t mode) {
 	struct timespec now = get_time();
 
 	struct fs_entry ret = {
@@ -113,7 +119,7 @@ struct fs_entry fs_new_symlink(char *name, uid_t uid, gid_t gid, mode_t mode) {
 			.st_gid = gid,
 			.st_mode = S_IFLNK | mode,
 			.st_nlink = 1,
-			.st_blksize = 4096,
+			.st_blksize = FS_BSIZE,
 
 			.st_ctim = now,
 			.st_atim = now,
@@ -128,9 +134,14 @@ struct fs_entry fs_new_symlink(char *name, uid_t uid, gid_t gid, mode_t mode) {
 	return ret;
 }
 
-static struct fs_entry fs_root;
+static struct {
+	struct fs_entry fs_root;
+	size_t max_allowed;
+	size_t used;
+	size_t files; /* number of inodes */
+} fs_info = { .max_allowed = 10*1024*1024 };
 
-const char *next_path(const char *path, char *buf) {
+static inline const char *next_path(const char *path, char *buf) {
 	for (; (*path != '/') && (*path != '\0'); *buf++ = *path++);
 	*buf = '\0';
 
@@ -139,7 +150,8 @@ const char *next_path(const char *path, char *buf) {
 	return path;
 }
 
-struct fs_entry *fs_add_entry(struct fs_entry *dir, struct fs_entry *en) {
+static inline struct fs_entry *fs_add_entry(struct fs_entry *dir,
+		struct fs_entry *en) {
 	ASSERT(dir->type == FS_DIR);
 	struct fs_entry *ret = NULL;
 	char *name = en->name;
@@ -151,7 +163,8 @@ struct fs_entry *fs_add_entry(struct fs_entry *dir, struct fs_entry *en) {
 	return ret;
 }
 
-struct fs_entry *fs_get_entry(struct fs_entry *dir, const char *name) {
+static inline struct fs_entry *fs_get_entry(struct fs_entry *dir,
+		const char *name) {
 	ASSERT(dir->type == FS_DIR);
 	struct fs_entry *ret;
 	HASH_FIND_STR(dir->dir.direntries, name, ret);
@@ -159,16 +172,8 @@ struct fs_entry *fs_get_entry(struct fs_entry *dir, const char *name) {
 	return ret;
 }
 
-struct fs_entry *fs_add_dir(struct fs_entry *dir, char *name, uid_t uid, gid_t
-		gid, mode_t mode) {
-	struct fs_entry *newdir = XMALLOC(sizeof(*newdir));
-	*newdir = fs_new_dir(name, uid, gid, mode);
-	fs_add_entry(dir, newdir);
-
-	return newdir;
-}
-
-struct fs_entry *fs_find_entry(struct fs_entry *root, const char *path) {
+static inline struct fs_entry *fs_find_entry(struct fs_entry *root,
+		const char *path) {
 	ASSERT(root->type == FS_DIR);
 
 	char pathseg[MAX_PATH_SEG + 1] = {0};
@@ -197,7 +202,8 @@ struct fs_entry *fs_find_entry(struct fs_entry *root, const char *path) {
 	return cur;
 }
 
-struct fs_entry *fs_delete_entry(struct fs_entry *dir, struct fs_entry *en) {
+static inline struct fs_entry *fs_delete_entry(struct fs_entry *dir,
+		struct fs_entry *en) {
 	ASSERT(dir->type == FS_DIR);
 
 	HASH_DEL(dir->dir.direntries, en);
@@ -205,7 +211,8 @@ struct fs_entry *fs_delete_entry(struct fs_entry *dir, struct fs_entry *en) {
 	return dir;
 }
 
-struct fs_entry *fs_find_parent(struct fs_entry *root, const char *path) {
+static inline struct fs_entry *fs_find_parent(struct fs_entry *root,
+		const char *path) {
 	struct fs_entry *ret = NULL;
 	char *tpath = strdup(path);
 	ASSERT(tpath);
@@ -231,51 +238,45 @@ static inline void fs_set_filesz(struct fs_entry *en, size_t sz) {
 
 static inline void fs_set_filebuf(struct fs_entry *en, char *ptr, size_t sz,
 		size_t cap) {
+	fs_info.used = fs_info.used - en->f.cap + cap;
 	en->f.buf = ptr;
 	en->f.cap = cap;
 	fs_set_filesz(en, sz);
-	en->st.st_blocks = (cap + 511) / 512;
+	en->st.st_blocks = DIVRNDUP(cap, 512);
+	DEBUG_LOG("RESIZE %zu %zu %zu\n", fs_info.used, sz, cap);
 }
 
-void fs_resize_file(struct fs_entry *en, size_t newlen) {
+static inline int fs_resize_file(struct fs_entry *en, size_t newlen) {
 	struct fs_file *fl = &en->f;
 	size_t newcap = fl->cap;
 	char *ptr = fl->buf;
 
+	if (newlen == fl->cap)
+		return 0;
+
 	if (newlen > fl->cap) {
-		newcap = 4 * fl->cap / 3 < newlen ? newlen : 4 * fl->cap / 3;
+		newcap = 4 * fl->cap / 3;
+		newcap = newcap < newlen ? newlen : newcap;
+		size_t new_used = fs_info.used - fl->cap + newcap;
+		if (new_used > fs_info.max_allowed)
+			return ENOSPC;
 		ptr = fl->buf ? XREALLOC(fl->buf, newcap) : XMALLOC(newcap);
 		ASSERT(ptr);
 		memset(ptr + fl->cap, 0, newcap - fl->cap);
 	}
 
 	fs_set_filebuf(en, ptr, newlen, newcap);
+	return 0;
 }
 
-struct fs_entry *fs_new() {
+static inline struct fs_entry *fs_new() {
 	uid_t uid = getuid();
 	gid_t gid = getgid();
 
-	fs_root = fs_new_dir("root", uid, gid, 0755);
-	// struct fs_entry *cur = &fs_root;
-	// struct fs_entry *dir1 = fs_add_dir(cur, "test", uid, gid, 0755);
-	// struct fs_entry *dir2 = fs_add_dir(cur, "test1", uid, gid, 0755);
-	// struct fs_entry *dir11 = fs_add_dir(dir1, "dir1_1", uid, gid, 0755);
-	// fs_add_dir(dir1, "dir1_2", uid, gid, 0755);
-	// fs_add_dir(dir1, "dir1_3", uid, gid, 0755);
-	// fs_add_dir(dir1, "dir1_4", uid, gid, 0755);
-    //
-	// fs_add_dir(dir2, "dir2_1", uid, gid, 0755);
-	// fs_add_dir(dir2, "dir2_2", uid, gid, 0755);
-	// fs_add_dir(dir2, "dir2_3", uid, gid, 0755);
-	// fs_add_dir(dir2, "dir2_4", uid, gid, 0755);
-    //
-	// fs_add_dir(dir11, "dir3_1", uid, gid, 0755);
-	// fs_add_dir(dir11, "dir3_2", uid, gid, 0755);
-	// fs_add_dir(dir11, "dir3_3", uid, gid, 0755);
-	// fs_add_dir(dir11, "dir3_4", uid, gid, 0755);
+	fs_info.fs_root = fs_new_dir("root", uid, gid, 0755);
+	fs_info.files++;
 
-	return &fs_root;
+	return &fs_info.fs_root;
 }
 
 void *fs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
@@ -285,9 +286,11 @@ void *fs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
 	return fs_new();
 }
 
-void fs_free_entry(struct fs_entry *en) {
+static inline void fs_free_entry(struct fs_entry *en) {
 	switch (en->type) {
 		case FS_FILE:
+			fs_info.used -= en->f.cap;
+			/* fallthrough */
 		case FS_SYMLINK:
 			XFREE(en->f.buf);
 			en->f.buf = NULL;
@@ -316,13 +319,13 @@ void fs_free_entry(struct fs_entry *en) {
 void fs_destroy(void *private_data) {
 	(void)private_data;
 
-	fs_free_entry(&fs_root);
+	fs_free_entry(&fs_info.fs_root);
 }
 
 int fs_getattr(const char *path, struct stat *st, struct fuse_file_info *fi) {
 	(void)fi;
 
-	struct fs_entry *en = fs_find_entry(&fs_root, path);
+	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 	DEBUG_LOG("FS getattr path %p '%s'\n", en, path);
 
 	if (!en)
@@ -345,7 +348,7 @@ int fs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
 	filler(buffer, ".", NULL, 0, 0);
 	filler(buffer, "..", NULL, 0, 0);
 
-	struct fs_entry *dir = fs_find_entry(&fs_root, path);
+	struct fs_entry *dir = fs_find_entry(&fs_info.fs_root, path);
 	if (!dir || dir->type != FS_DIR)
 		return -ENOENT;
 
@@ -359,7 +362,7 @@ int fs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
 int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	(void)fi;
 
-	struct fs_entry *dir = fs_find_parent(&fs_root, path), *file = NULL;
+	struct fs_entry *dir = fs_find_parent(&fs_info.fs_root, path), *file = NULL;
 	if (!dir)
 		return -ENOENT;
 
@@ -378,6 +381,7 @@ int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	}
 
 	fs_add_entry(dir, file);
+	fs_info.files++;
 
 	return 0;
 }
@@ -386,7 +390,7 @@ int fs_write(const char *path, const char *buf, size_t sz, off_t off, struct
 		fuse_file_info *fi) {
 	(void)fi;
 
-	struct fs_entry *en = fs_find_entry(&fs_root, path);
+	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 
 	if (!en)
 		return -ENOENT;
@@ -395,7 +399,8 @@ int fs_write(const char *path, const char *buf, size_t sz, off_t off, struct
 		return -EBADF;
 
 	if (en->f.len < off + sz)
-		fs_resize_file(en, off + sz);
+		if (fs_resize_file(en, off + sz))
+			return -ENOSPC;
 
 	memcpy(en->f.buf + off, buf, sz);
 
@@ -415,7 +420,7 @@ int fs_read(const char *path, char *buf, size_t sz, off_t off,
 
 	ASSERT(off >= 0);
 
-	struct fs_entry *en = fs_find_entry(&fs_root, path);
+	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 
 	if (!en)
 		return -ENOENT;
@@ -441,7 +446,7 @@ int fs_read(const char *path, char *buf, size_t sz, off_t off,
 }
 
 int fs_unlink(const char *path) {
-	struct fs_entry *dir = fs_find_parent(&fs_root, path);
+	struct fs_entry *dir = fs_find_parent(&fs_info.fs_root, path);
 	if (!dir)
 		return -ENOENT;
 
@@ -457,6 +462,9 @@ int fs_unlink(const char *path) {
 	if (en->type != FS_FILE && en->type != FS_SYMLINK)
 		return -EBADF;
 
+	if (en->type == FS_FILE)
+		fs_info.used -= en->f.cap;
+
 	char *ptr = en->f.buf;
 	en->f.buf = NULL;
 	en->f.len = 0;
@@ -466,12 +474,13 @@ int fs_unlink(const char *path) {
 
 	fs_delete_entry(dir, en);
 	XFREE(en);
+	fs_info.files--;
 
 	return 0;
 }
 
 int fs_rmdir(const char *path) {
-	struct fs_entry *dir = fs_find_parent(&fs_root, path);
+	struct fs_entry *dir = fs_find_parent(&fs_info.fs_root, path);
 	if (!dir)
 		return -ENOENT;
 
@@ -489,6 +498,7 @@ int fs_rmdir(const char *path) {
 
 	fs_delete_entry(dir, en);
 	XFREE(en);
+	fs_info.files--;
 
 	return 0;
 }
@@ -496,7 +506,7 @@ int fs_rmdir(const char *path) {
 int fs_mkdir(const char *path, mode_t mode) {
 	mode |= S_IFDIR;
 
-	struct fs_entry *dir = fs_find_parent(&fs_root, path);
+	struct fs_entry *dir = fs_find_parent(&fs_info.fs_root, path);
 	if (!dir)
 		return -ENOENT;
 
@@ -513,6 +523,7 @@ int fs_mkdir(const char *path, mode_t mode) {
 	free(pathcopy); /* NOTE: stdup uses malloc, not XMALLOC */
 
 	fs_add_entry(dir, en);
+	fs_info.files++;
 
 	DEBUG_LOG("Mkdir '%s', %o, %p, %p\n", path, mode, dir, en);
 
@@ -524,7 +535,7 @@ int fs_truncate(const char *path, off_t len, struct fuse_file_info *fi) {
 
 	ASSERT(len >= 0);
 
-	struct fs_entry *en = fs_find_entry(&fs_root, path);
+	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 
 	if (!en)
 		return -ENOENT;
@@ -535,7 +546,8 @@ int fs_truncate(const char *path, off_t len, struct fuse_file_info *fi) {
 	if (en->f.len > (size_t)len)
 		fs_set_filesz(en, len);
 	else if (en->f.len < (size_t)len)
-		fs_resize_file(en, len);
+		if (fs_resize_file(en, len))
+			return -ENOSPC;
 
 	struct timespec now = get_time();
 	en->st.st_atim = now;
@@ -547,7 +559,7 @@ int fs_truncate(const char *path, off_t len, struct fuse_file_info *fi) {
 int fs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	(void)fi;
 
-	struct fs_entry *en = fs_find_entry(&fs_root, path);
+	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 
 	if (!en)
 		return -ENOENT;
@@ -560,7 +572,7 @@ int fs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
 int fs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {
 	(void)fi;
 
-	struct fs_entry *en = fs_find_entry(&fs_root, path);
+	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 
 	if (!en)
 		return -ENOENT;
@@ -572,7 +584,7 @@ int fs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) 
 }
 
 int fs_symlink(const char *target, const char *path) {
-	struct fs_entry *dir = fs_find_parent(&fs_root, path), *file = NULL;
+	struct fs_entry *dir = fs_find_parent(&fs_info.fs_root, path), *file = NULL;
 	if (!dir)
 		return -ENOENT;
 
@@ -590,17 +602,17 @@ int fs_symlink(const char *target, const char *path) {
 		free(tpath); /* NOTE: stdup uses malloc, not XMALLOC */
 	}
 
-	size_t targetlen = strlen(target) + 1;
 	file->f.buf = strdup(target);
-	file->f.len = file->f.cap = targetlen;
+	file->f.len = file->f.cap = strlen(target) + 1;
 
 	fs_add_entry(dir, file);
+	fs_info.files++;
 
 	return 0;
 }
 
 int fs_readlink(const char *path, char *buf, size_t bufsz) {
-	struct fs_entry *en = fs_find_entry(&fs_root, path);
+	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 	if (!en)
 		return -ENOENT;
 
@@ -616,7 +628,7 @@ int fs_utimens(const char *path, const struct timespec tv[2],
 		struct fuse_file_info *fi) {
 	(void)fi;
 
-	struct fs_entry *en = fs_find_entry(&fs_root, path);
+	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 	if (!en)
 		return -ENOENT;
 
@@ -625,11 +637,39 @@ int fs_utimens(const char *path, const struct timespec tv[2],
 	return 0;
 }
 
+int fs_statfs(const char *path, struct statvfs *stat) {
+	(void)path;
+
+	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
+	if (!en)
+		return -ENOENT;
+
+	size_t nblocks = DIVRNDUP(fs_info.max_allowed, FS_BSIZE);
+	size_t ublocks = DIVRNDUP(fs_info.used, FS_BSIZE);
+	size_t ablocks = nblocks - ublocks;
+
+	DEBUG_LOG("STATFS %zu %zu %zu\n", fs_info.used, ublocks * FS_BSIZE, ublocks);
+
+	*stat = (struct statvfs) {
+		.f_bsize = FS_BSIZE,
+		.f_frsize = FS_BSIZE,
+		.f_blocks = nblocks,
+		.f_bfree = ablocks,
+		.f_bavail = ablocks,
+
+		.f_files = fs_info.files,
+
+		.f_namemax = MAX_PATH_SEG,
+	};
+
+	return 0;
+}
+
 // int fs_fallocate(const char *path, int mode, off_t offset, off_t len,
 // 		struct fuse_file_info *fi) {
 // 	(void)fi;
 //
-// 	struct fs_entry *en = fs_find_entry(&fs_root, path);
+// 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 // 	if (!en)
 // 		return -ENOENT;
 //
