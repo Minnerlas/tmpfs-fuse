@@ -50,8 +50,15 @@ void *xrealloc_(void *ptr, size_t sz, char *file, int line) {
 #define XFREE free
 #endif
 
+static inline struct timespec get_time() {
+	struct timespec tp = {0};
+	ASSERT(clock_gettime(CLOCK_REALTIME, &tp) == 0);
+	return tp;
+}
+
 struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid, mode_t mode) {
-	time_t now = time(NULL);
+	struct timespec now = get_time();
+
 	struct fs_entry ret = {
 		.st = {
 			.st_uid = uid,
@@ -60,9 +67,9 @@ struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid, mode_t mode) {
 			.st_nlink = 2,
 			.st_size = 4096,
 
-			.st_ctime = now,
-			.st_atime = now,
-			.st_mtime = now,
+			.st_ctim = now,
+			.st_atim = now,
+			.st_mtim = now,
 		},
 		.type = FS_DIR,
 		.dir = { .direntries = NULL }
@@ -74,7 +81,7 @@ struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid, mode_t mode) {
 }
 
 struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid, mode_t mode) {
-	time_t now = time(NULL);
+	struct timespec now = get_time();
 
 	struct fs_entry ret = {
 		.st = {
@@ -84,9 +91,9 @@ struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid, mode_t mode) {
 			.st_nlink = 1,
 			.st_blksize = 4096,
 
-			.st_ctime = now,
-			.st_atime = now,
-			.st_mtime = now,
+			.st_ctim = now,
+			.st_atim = now,
+			.st_mtim = now,
 		},
 		.type = FS_FILE,
 		.f = { .len = 0, .buf = NULL }
@@ -98,7 +105,7 @@ struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid, mode_t mode) {
 }
 
 struct fs_entry fs_new_symlink(char *name, uid_t uid, gid_t gid, mode_t mode) {
-	time_t now = time(NULL);
+	struct timespec now = get_time();
 
 	struct fs_entry ret = {
 		.st = {
@@ -108,9 +115,9 @@ struct fs_entry fs_new_symlink(char *name, uid_t uid, gid_t gid, mode_t mode) {
 			.st_nlink = 1,
 			.st_blksize = 4096,
 
-			.st_ctime = now,
-			.st_atime = now,
-			.st_mtime = now,
+			.st_ctim = now,
+			.st_atim = now,
+			.st_mtim = now,
 		},
 		.type = FS_SYMLINK,
 		.f = { .len = 0, .buf = NULL }
@@ -392,9 +399,9 @@ int fs_write(const char *path, const char *buf, size_t sz, off_t off, struct
 
 	memcpy(en->f.buf + off, buf, sz);
 
-	time_t now = time(NULL);
-	en->st.st_atime = now;
-	en->st.st_mtime = now;
+	struct timespec now = get_time();
+	en->st.st_atim = now;
+	en->st.st_mtim = now;
 
 	DEBUG_LOG("Write '%s' buf: %p, sz: %zu, off: %zd\n",
 			path, buf, sz, off);
@@ -428,7 +435,7 @@ int fs_read(const char *path, char *buf, size_t sz, off_t off,
 
 	memcpy(buf, fl->buf + off, sz);
 
-	en->st.st_atime = time(NULL);
+	en->st.st_atim = get_time();
 
 	return sz;
 }
@@ -530,9 +537,9 @@ int fs_truncate(const char *path, off_t len, struct fuse_file_info *fi) {
 	else if (en->f.len < (size_t)len)
 		fs_resize_file(en, len);
 
-	time_t now = time(NULL);
-	en->st.st_atime = now;
-	en->st.st_mtime = now;
+	struct timespec now = get_time();
+	en->st.st_atim = now;
+	en->st.st_mtim = now;
 
 	return 0;
 }
@@ -613,8 +620,7 @@ int fs_utimens(const char *path, const struct timespec tv[2],
 	if (!en)
 		return -ENOENT;
 
-	en->st.st_atime = tv->tv_sec;
-	en->st.st_mtime = tv->tv_sec;
+	en->st.st_atim = en->st.st_mtim = *tv;
 
 	return 0;
 }
