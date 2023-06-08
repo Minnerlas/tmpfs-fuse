@@ -71,5 +71,6 @@ int fs_readlink(const char *path, char *buf, size_t bufsz);
 int fs_utimens(const char *path, const struct timespec tv[2],
 		struct fuse_file_info *fi);
 int fs_statfs(const char *path, struct statvfs *stat);
+int fs_rename(const char *old, const char *new, unsigned int flags);
 
 #endif /* FS_H */

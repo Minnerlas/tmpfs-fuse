@@ -58,6 +58,15 @@ static struct timespec get_time() {
 	return tp;
 }
 
+/* Must be freed with `free` */
+static char *xbasename(const char *path) {
+	char *pathcopy = strdup(path);
+	ASSERT(pathcopy);
+	char *ret = basename(pathcopy);
+	memmove(pathcopy, ret, strlen(ret) + 1);
+	return pathcopy;
+}
+
 static inline struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid,
 		mode_t mode) {
 	struct timespec now = get_time();
@@ -666,6 +675,67 @@ int fs_statfs(const char *path, struct statvfs *stat) {
 
 		.f_namemax = MAX_PATH_SEG,
 	};
+
+	return 0;
+}
+
+int fs_rename(const char *old, const char *new, unsigned int flags) {
+	/* TODO check for:
+	 * The new pathname contained a path prefix of the old, or,
+	 * more generally, an attempt was made to make a directory a subdirectory
+	 * of itself.
+	 */
+
+	DEBUG_LOG("RENAME %s -> %s\n", old, new);
+
+	struct fs_entry *oldparent = fs_find_parent(&fs_info.fs_root, old);
+	if (!oldparent)
+		return -ENOENT;
+
+	struct fs_entry *newparent = fs_find_parent(&fs_info.fs_root, new);
+	if (!newparent)
+		return -ENOENT;
+
+	char *fname = NULL;
+
+	struct fs_entry *en = fs_get_entry(oldparent, fname = xbasename(old));
+	free(fname), fname = NULL;
+
+	if (!en)
+		return -ENOENT;
+
+	struct fs_entry *newf = fs_get_entry(newparent, fname = xbasename(new));
+	free(fname), fname = NULL;
+
+	if (flags) {
+		if (flags & RENAME_NOREPLACE) {
+			if (newf)
+				return -EEXIST;
+
+		} else if (flags & RENAME_EXCHANGE) {
+			if (!newf)
+				return -ENOENT;
+
+			fs_delete_entry(oldparent, en);
+			fs_delete_entry(newparent, newf);
+			fs_add_entry(newparent, en);
+			fs_add_entry(oldparent, newf);
+
+			return 0;
+		} else {
+			return -EINVAL;
+		}
+	}
+
+	if (newf)
+		fs_delete_entry(newparent, newf), fs_free_entry(newf), XFREE(newf);
+
+	fs_delete_entry(oldparent, en);
+
+	snprintf(en->name, sizeof(en->name), "%s", fname = xbasename(new));
+	free(fname), fname = NULL;
+
+	fs_add_entry(newparent, en);
 
 	return 0;
 }
