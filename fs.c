@@ -642,11 +642,24 @@ int fs_utimens(const char *path, const struct timespec tv[2],
 		struct fuse_file_info *fi) {
 	(void)fi;
 
+	DEBUG_LOG("UTIMENS %lu.%lu %lu.%lu\n", tv[0].tv_sec, tv[0].tv_nsec,
+			tv[1].tv_sec, tv[1].tv_nsec);
+
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 	if (!en)
 		return -ENOENT;
 
-	en->st.st_atim = en->st.st_mtim = *tv;
+	struct timespec now = get_time();
+
+	if (tv[0].tv_nsec == UTIME_NOW)
+		en->st.st_atim = now;
+	else if (tv[0].tv_nsec != UTIME_OMIT)
+		en->st.st_atim = tv[0];
+
+	if (tv[1].tv_nsec == UTIME_NOW)
+		en->st.st_mtim = now;
+	else if (tv[1].tv_nsec != UTIME_OMIT)
+		en->st.st_mtim = tv[1];
 
 	return 0;
 }
