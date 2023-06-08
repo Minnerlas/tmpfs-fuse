@@ -18,7 +18,8 @@ val: $(OUT)
 val: $(OUT)
 
 $(OUT): $(OBJS)
-fs.o: fs.c fs.h
+fs.o: fs.c fs.h Makefile
+main.o: main.c Makefile
 
 .PHONEY: clean
 clean:
