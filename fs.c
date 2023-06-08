@@ -52,7 +52,7 @@ void *xrealloc_(void *ptr, size_t sz, char *file, int line) {
 
 #define DIVRNDUP(a, b) (((a) + ((b) - 1)) / (b))
 
-static inline struct timespec get_time() {
+static struct timespec get_time() {
 	struct timespec tp = {0};
 	ASSERT(clock_gettime(CLOCK_REALTIME, &tp) == 0);
 	return tp;
@@ -84,7 +84,7 @@ static inline struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid,
 	return ret;
 }
 
-static inline struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid,
+static struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid,
 		mode_t mode) {
 	struct timespec now = get_time();
 
@@ -109,7 +109,7 @@ static inline struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid,
 	return ret;
 }
 
-static inline struct fs_entry fs_new_symlink(char *name, uid_t uid, gid_t gid,
+static struct fs_entry fs_new_symlink(char *name, uid_t uid, gid_t gid,
 		mode_t mode) {
 	struct timespec now = get_time();
 
@@ -139,9 +139,9 @@ static struct {
 	size_t max_allowed;
 	size_t used;
 	size_t files; /* number of inodes */
-} fs_info = { .max_allowed = 10*1024*1024 };
+} fs_info = { .max_allowed = 0 };
 
-static inline const char *next_path(const char *path, char *buf) {
+static const char *next_path(const char *path, char *buf) {
 	for (; (*path != '/') && (*path != '\0'); *buf++ = *path++);
 	*buf = '\0';
 
@@ -150,7 +150,7 @@ static inline const char *next_path(const char *path, char *buf) {
 	return path;
 }
 
-static inline struct fs_entry *fs_add_entry(struct fs_entry *dir,
+static struct fs_entry *fs_add_entry(struct fs_entry *dir,
 		struct fs_entry *en) {
 	ASSERT(dir->type == FS_DIR);
 	struct fs_entry *ret = NULL;
@@ -163,7 +163,7 @@ static inline struct fs_entry *fs_add_entry(struct fs_entry *dir,
 	return ret;
 }
 
-static inline struct fs_entry *fs_get_entry(struct fs_entry *dir,
+static struct fs_entry *fs_get_entry(struct fs_entry *dir,
 		const char *name) {
 	ASSERT(dir->type == FS_DIR);
 	struct fs_entry *ret;
@@ -172,7 +172,7 @@ static inline struct fs_entry *fs_get_entry(struct fs_entry *dir,
 	return ret;
 }
 
-static inline struct fs_entry *fs_find_entry(struct fs_entry *root,
+static struct fs_entry *fs_find_entry(struct fs_entry *root,
 		const char *path) {
 	ASSERT(root->type == FS_DIR);
 
@@ -202,7 +202,7 @@ static inline struct fs_entry *fs_find_entry(struct fs_entry *root,
 	return cur;
 }
 
-static inline struct fs_entry *fs_delete_entry(struct fs_entry *dir,
+static struct fs_entry *fs_delete_entry(struct fs_entry *dir,
 		struct fs_entry *en) {
 	ASSERT(dir->type == FS_DIR);
 
@@ -211,7 +211,7 @@ static inline struct fs_entry *fs_delete_entry(struct fs_entry *dir,
 	return dir;
 }
 
-static inline struct fs_entry *fs_find_parent(struct fs_entry *root,
+static struct fs_entry *fs_find_parent(struct fs_entry *root,
 		const char *path) {
 	struct fs_entry *ret = NULL;
 	char *tpath = strdup(path);
@@ -231,14 +231,14 @@ static inline struct fs_entry *fs_find_parent(struct fs_entry *root,
 	return ret;
 }
 
-static inline void fs_set_filesz(struct fs_entry *en, size_t sz) {
+static void fs_set_filesz(struct fs_entry *en, size_t sz) {
 	en->f.len = sz;
 	en->st.st_size = sz;
 }
 
-static inline void fs_set_filebuf(struct fs_entry *en, char *ptr, size_t sz,
+static void fs_set_filebuf(struct fs_entry *en, char *ptr, size_t sz,
 		size_t cap) {
-	fs_info.used = fs_info.used - en->f.cap + cap;
+	fs_info.used = fs_info.used - en->f.len + sz;
 	en->f.buf = ptr;
 	en->f.cap = cap;
 	fs_set_filesz(en, sz);
@@ -246,10 +246,14 @@ static inline void fs_set_filebuf(struct fs_entry *en, char *ptr, size_t sz,
 	DEBUG_LOG("RESIZE %zu %zu %zu\n", fs_info.used, sz, cap);
 }
 
-static inline int fs_resize_file(struct fs_entry *en, size_t newlen) {
+static int fs_resize_file(struct fs_entry *en, const size_t newlen) {
 	struct fs_file *fl = &en->f;
 	size_t newcap = fl->cap;
 	char *ptr = fl->buf;
+
+	size_t new_used = fs_info.used - fl->len + newlen;
+	if (fs_info.max_allowed && new_used > fs_info.max_allowed)
+		return ENOSPC;
 
 	if (newlen == fl->cap)
 		return 0;
@@ -257,19 +261,21 @@ static inline int fs_resize_file(struct fs_entry *en, size_t newlen) {
 	if (newlen > fl->cap) {
 		newcap = 4 * fl->cap / 3;
 		newcap = newcap < newlen ? newlen : newcap;
-		size_t new_used = fs_info.used - fl->cap + newcap;
-		if (new_used > fs_info.max_allowed)
-			return ENOSPC;
 		ptr = fl->buf ? XREALLOC(fl->buf, newcap) : XMALLOC(newcap);
 		ASSERT(ptr);
 		memset(ptr + fl->cap, 0, newcap - fl->cap);
+	} else { /* newlen < fl->cap */
+		newcap = newlen;
+		ASSERT(fl->buf);
+		ptr = XREALLOC(fl->buf, newcap);
+		ASSERT(ptr);
 	}
 
 	fs_set_filebuf(en, ptr, newlen, newcap);
 	return 0;
 }
 
-static inline struct fs_entry *fs_new() {
+static struct fs_entry *fs_new() {
 	uid_t uid = getuid();
 	gid_t gid = getgid();
 
@@ -286,10 +292,10 @@ void *fs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
 	return fs_new();
 }
 
-static inline void fs_free_entry(struct fs_entry *en) {
+static void fs_free_entry(struct fs_entry *en) {
 	switch (en->type) {
 		case FS_FILE:
-			fs_info.used -= en->f.cap;
+			fs_info.used -= en->f.len;
 			/* fallthrough */
 		case FS_SYMLINK:
 			XFREE(en->f.buf);
@@ -463,7 +469,7 @@ int fs_unlink(const char *path) {
 		return -EBADF;
 
 	if (en->type == FS_FILE)
-		fs_info.used -= en->f.cap;
+		fs_info.used -= en->f.len;
 
 	char *ptr = en->f.buf;
 	en->f.buf = NULL;
@@ -543,11 +549,8 @@ int fs_truncate(const char *path, off_t len, struct fuse_file_info *fi) {
 	if (en->type != FS_FILE)
 		return -EBADF;
 
-	if (en->f.len > (size_t)len)
-		fs_set_filesz(en, len);
-	else if (en->f.len < (size_t)len)
-		if (fs_resize_file(en, len))
-			return -ENOSPC;
+	if (fs_resize_file(en, len))
+		return -ENOSPC;
 
 	struct timespec now = get_time();
 	en->st.st_atim = now;
@@ -644,8 +647,10 @@ int fs_statfs(const char *path, struct statvfs *stat) {
 	if (!en)
 		return -ENOENT;
 
-	size_t nblocks = DIVRNDUP(fs_info.max_allowed, FS_BSIZE);
 	size_t ublocks = DIVRNDUP(fs_info.used, FS_BSIZE);
+	size_t nblocks = fs_info.max_allowed
+		? DIVRNDUP(fs_info.max_allowed, FS_BSIZE)
+		: ublocks;
 	size_t ablocks = nblocks - ublocks;
 
 	DEBUG_LOG("STATFS %zu %zu %zu\n", fs_info.used, ublocks * FS_BSIZE, ublocks);
