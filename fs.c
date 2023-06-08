@@ -170,6 +170,7 @@ static struct fs_entry *fs_add_entry(struct fs_entry *dir,
 
 	HASH_ADD_STR(dir->dir.direntries, name, en);
 	en->parent = dir;
+	dir->st.st_nlink++;
 	return ret;
 }
 
@@ -689,21 +690,17 @@ int fs_rename(const char *old, const char *new, unsigned int flags) {
 
 	DEBUG_LOG("RENAME %s -> %s\n", old, new);
 
-	struct fs_entry *oldparent = fs_find_parent(&fs_info.fs_root, old);
-	if (!oldparent)
+	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, old);
+	if (!en)
 		return -ENOENT;
+
+	struct fs_entry *oldparent = en->parent;
 
 	struct fs_entry *newparent = fs_find_parent(&fs_info.fs_root, new);
 	if (!newparent)
 		return -ENOENT;
 
 	char *fname = NULL;
-
-	struct fs_entry *en = fs_get_entry(oldparent, fname = xbasename(old));
-	free(fname), fname = NULL;
-
-	if (!en)
-		return -ENOENT;
 
 	struct fs_entry *newf = fs_get_entry(newparent, fname = xbasename(new));
 	free(fname), fname = NULL;
