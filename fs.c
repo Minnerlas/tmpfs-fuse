@@ -238,7 +238,7 @@ static struct fs_entry *fs_find_parent(struct fs_entry *root,
 
 	if (dir && dir->type == FS_DIR) ret = dir;
 
-	free(tpath); /* NODE: stdup uses malloc, not XMALLOC */
+	free(tpath); /* NOTE: strdup uses malloc, not XMALLOC */
 	return ret;
 }
 
@@ -384,17 +384,15 @@ int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 		return -ENOENT;
 
 	{
-		char *tpath = strdup(path);
-		ASSERT(tpath);
+		char *filen = xbasename(path);
 
-		char *filen = basename(tpath);
 		DEBUG_LOG("Create '%s' '%s' '%s'\n", path, filen,
 				dir->name);
 		file = XMALLOC(sizeof(*file));
 		ASSERT(file);
 		*file = fs_new_file(filen, getuid(), getgid(), mode);
 
-		free(tpath); /* NODE: stdup uses malloc, not XMALLOC */
+		free(filen); /* NOTE: xbasename uses malloc, not XMALLOC */
 	}
 
 	fs_add_entry(dir, file);
@@ -467,12 +465,10 @@ int fs_unlink(const char *path) {
 	if (!dir)
 		return -ENOENT;
 
-	char *pathcopy = strdup(path);
-	ASSERT(pathcopy);
-	char *fname = basename(pathcopy);
-
+	char *fname = xbasename(path);
 	struct fs_entry *en = fs_get_entry(dir, fname);
-	free(pathcopy);
+	free(fname); /* NOTE: xbasename uses malloc, not XMALLOC */
+
 	if (!en)
 		return -ENOENT;
 
@@ -501,12 +497,10 @@ int fs_rmdir(const char *path) {
 	if (!dir)
 		return -ENOENT;
 
-	char *pathcopy = strdup(path);
-	ASSERT(pathcopy);
-	char *fname = basename(pathcopy);
-
+	char *fname = xbasename(path);
 	struct fs_entry *en = fs_get_entry(dir, fname);
-	free(pathcopy); /* NOTE: stdup uses malloc, not XMALLOC */
+	free(fname); /* NOTE: xbasename uses malloc, not XMALLOC */
+
 	if (!en)
 		return -ENOENT;
 
@@ -530,14 +524,13 @@ int fs_mkdir(const char *path, mode_t mode) {
 	if (dir->type != FS_DIR)
 		return -ENOTDIR;
 
-	char *pathcopy = strdup(path);
-	ASSERT(pathcopy);
-	char *fname = basename(pathcopy);
+	char *fname = xbasename(path);
 
 	struct fs_entry *en = XMALLOC(sizeof(*en));
 	ASSERT(en);
 	*en = fs_new_dir(fname, getuid(), getgid(), mode);
-	free(pathcopy); /* NOTE: stdup uses malloc, not XMALLOC */
+
+	free(fname); /* NOTE: xbasename uses malloc, not XMALLOC */
 
 	fs_add_entry(dir, en);
 	fs_info.files++;
@@ -603,21 +596,21 @@ int fs_symlink(const char *target, const char *path) {
 		return -ENOENT;
 
 	{
-		char *tpath = strdup(path);
-		ASSERT(tpath);
+		char *filen = xbasename(path);
 
-		char *filen = basename(tpath);
 		DEBUG_LOG("Symlink '%s' '%s' '%s'\n", path, filen,
 				dir->name);
 		file = XMALLOC(sizeof(*file));
 		ASSERT(file);
 		*file = fs_new_symlink(filen, getuid(), getgid(), 0755);
 
-		free(tpath); /* NOTE: stdup uses malloc, not XMALLOC */
+		free(filen); /* NOTE: xbasename uses malloc, not XMALLOC */
 	}
 
-	file->f.buf = strdup(target);
+	size_t targetsz = strlen(target) + 1;
+	file->f.buf = XMALLOC(targetsz);
 	file->f.len = file->f.cap = strlen(target) + 1;
+	memcpy(file->f.buf, target, targetsz);
 
 	fs_add_entry(dir, file);
 	fs_info.files++;
@@ -716,7 +709,7 @@ int fs_rename(const char *old, const char *new, unsigned int flags) {
 	char *fname = NULL;
 
 	struct fs_entry *newf = fs_get_entry(newparent, fname = xbasename(new));
-	free(fname), fname = NULL;
+	free(fname), fname = NULL; /* NOTE: xbasename uses malloc, not XMALLOC */
 
 	if (flags) {
 		if (flags & RENAME_NOREPLACE) {
@@ -744,7 +737,7 @@ int fs_rename(const char *old, const char *new, unsigned int flags) {
 	fs_delete_entry(oldparent, en);
 
 	snprintf(en->name, sizeof(en->name), "%s", fname = xbasename(new));
-	free(fname), fname = NULL;
+	free(fname), fname = NULL; /* NOTE: xbasename uses malloc, not XMALLOC */
 
 	fs_add_entry(newparent, en);
 
