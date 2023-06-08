@@ -37,6 +37,7 @@ enum filetype {
 };
 
 struct fs_entry {
+	struct fs_entry *parent;
 	enum filetype type;
 	char name[MAX_PATH_SEG + 1]; /* key */
 

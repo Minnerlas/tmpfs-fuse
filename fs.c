@@ -169,6 +169,7 @@ static struct fs_entry *fs_add_entry(struct fs_entry *dir,
 	if (ret) HASH_DEL(dir->dir.direntries, ret);
 
 	HASH_ADD_STR(dir->dir.direntries, name, en);
+	en->parent = dir;
 	return ret;
 }
 
