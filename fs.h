@@ -10,6 +10,8 @@
 #include <sys/stat.h>
 #include <fuse3/fuse.h>
 
+#include <pthread.h>
+
 #include "uthash/src/uthash.h"
 
 #define MAX_PATH_SEG 255
@@ -43,6 +45,8 @@ struct fs_entry {
 
 	struct stat st;
 	UT_hash_handle hh;
+
+	pthread_rwlock_t lock;
 
 	union {
 		struct fs_file f;

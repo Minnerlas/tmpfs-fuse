@@ -1,9 +1,11 @@
 OBJS = main.o fs.o
 
 
-CFLAGS = -Og -g -Wall -Wextra -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE \
+CFLAGS = -O3 -g -Wall -Wextra -D_FILE_OFFSET_BITS=64 -D_GNU_SOURCE \
 		 $$(pkg-config fuse3 --cflags --libs) -DNDEBUG_LOG
-LDFLAGS = -g $$(pkg-config fuse3 --cflags --libs)
+		 # -fsanitize=thread -fsanitize=undefined
+
+LDFLAGS = -g $$(pkg-config fuse3 --cflags --libs) -fsanitize=thread -fsanitize=undefined
 
 OUT = main
 

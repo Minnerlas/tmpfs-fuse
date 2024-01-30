@@ -52,6 +52,11 @@ void *xrealloc_(void *ptr, size_t sz, char *file, int line) {
 
 #define DIVRNDUP(a, b) (((a) + ((b) - 1)) / (b))
 
+#define RLOCK(l) pthread_rwlock_rdlock((l))
+#define WLOCK(l) pthread_rwlock_wrlock((l))
+#define UNLOCK(l) pthread_rwlock_unlock((l))
+#define RET_UNLOCK(l, r) (pthread_rwlock_unlock((l)), (r))
+
 static struct timespec get_time() {
 	struct timespec tp = {0};
 	ASSERT(clock_gettime(CLOCK_REALTIME, &tp) == 0);
@@ -72,6 +77,7 @@ static inline struct fs_entry fs_new_dir(char *name, uid_t uid, gid_t gid,
 	struct timespec now = get_time();
 
 	struct fs_entry ret = {
+		.lock = PTHREAD_RWLOCK_INITIALIZER,
 		.st = {
 			.st_uid = uid,
 			.st_gid = gid,
@@ -98,6 +104,7 @@ static struct fs_entry fs_new_file(char *name, uid_t uid, gid_t gid,
 	struct timespec now = get_time();
 
 	struct fs_entry ret = {
+		.lock = PTHREAD_RWLOCK_INITIALIZER,
 		.st = {
 			.st_uid = uid,
 			.st_gid = gid,
@@ -123,6 +130,7 @@ static struct fs_entry fs_new_symlink(char *name, uid_t uid, gid_t gid,
 	struct timespec now = get_time();
 
 	struct fs_entry ret = {
+		.lock = PTHREAD_RWLOCK_INITIALIZER,
 		.st = {
 			.st_uid = uid,
 			.st_gid = gid,
@@ -144,11 +152,15 @@ static struct fs_entry fs_new_symlink(char *name, uid_t uid, gid_t gid,
 }
 
 static struct {
+	pthread_rwlock_t lock;
 	struct fs_entry fs_root;
 	size_t max_allowed;
 	size_t used;
 	size_t files; /* number of inodes */
-} fs_info = { .max_allowed = 0 };
+} fs_info = {
+	.lock = PTHREAD_RWLOCK_INITIALIZER,
+	.max_allowed = 0
+};
 
 static const char *next_path(const char *path, char *buf) {
 	for (; (*path != '/') && (*path != '\0'); *buf++ = *path++);
@@ -270,7 +282,7 @@ static int fs_resize_file(struct fs_entry *en, const size_t newlen) {
 		return 0;
 
 	if (newlen > fl->cap) {
-		newcap = 4 * fl->cap / 3;
+		newcap = (3 * fl->cap) / 2;
 		newcap = newcap < newlen ? newlen : newcap;
 		ptr = fl->buf ? XREALLOC(fl->buf, newcap) : XMALLOC(newcap);
 		ASSERT(ptr);
@@ -297,9 +309,12 @@ static struct fs_entry *fs_new() {
 }
 
 void *fs_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {
-	(void)conn;
 	(void)cfg;
+	(void)conn;
 
+	if (!(conn->capable & FUSE_CAP_WRITEBACK_CACHE))
+		fprintf(stderr, "Writeback cache not supported\n"), exit(1);
+	conn->want |= FUSE_CAP_WRITEBACK_CACHE;
 	return fs_new();
 }
 
@@ -342,15 +357,20 @@ void fs_destroy(void *private_data) {
 int fs_getattr(const char *path, struct stat *st, struct fuse_file_info *fi) {
 	(void)fi;
 
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 	DEBUG_LOG("FS getattr path %p '%s'\n", en, path);
 
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	RLOCK(&en->lock);
+	UNLOCK(&fs_info.lock);
 
 	*st = en->st;
 
-	return 0;
+	return RET_UNLOCK(&en->lock, 0);
 }
 
 int fs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
@@ -365,23 +385,33 @@ int fs_readdir(const char *path, void *buffer, fuse_fill_dir_t filler,
 	filler(buffer, ".", NULL, 0, 0);
 	filler(buffer, "..", NULL, 0, 0);
 
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *dir = fs_find_entry(&fs_info.fs_root, path);
 	if (!dir || dir->type != FS_DIR)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	RLOCK(&dir->lock);
+	UNLOCK(&fs_info.lock);
 
 	for (struct fs_entry *s = dir->dir.direntries; s != NULL; s = s->hh.next) {
 		ASSERT(filler(buffer, s->name, NULL, 0, 0) != 1);
 	}
 
-	return 0;
+	return RET_UNLOCK(&dir->lock, 0);
 }
 
 int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	(void)fi;
 
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *dir = fs_find_parent(&fs_info.fs_root, path), *file = NULL;
 	if (!dir)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	WLOCK(&dir->lock);
+	UNLOCK(&fs_info.lock);
 
 	{
 		char *filen = xbasename(path);
@@ -398,24 +428,29 @@ int fs_create(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	fs_add_entry(dir, file);
 	fs_info.files++;
 
-	return 0;
+	return RET_UNLOCK(&dir->lock, 0);
 }
 
 int fs_write(const char *path, const char *buf, size_t sz, off_t off, struct
 		fuse_file_info *fi) {
 	(void)fi;
 
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	WLOCK(&en->lock);
+	UNLOCK(&fs_info.lock);
 
 	if (en->type != FS_FILE)
-		return -EBADF;
+		return RET_UNLOCK(&en->lock, -EBADF);
 
-	if (en->f.len < off + sz)
-		if (fs_resize_file(en, off + sz))
-			return -ENOSPC;
+	if (en->f.len < sz + off)
+		if (fs_resize_file(en, sz + off))
+			return RET_UNLOCK(&en->lock, -ENOSPC);
 
 	memcpy(en->f.buf + off, buf, sz);
 
@@ -426,28 +461,33 @@ int fs_write(const char *path, const char *buf, size_t sz, off_t off, struct
 	DEBUG_LOG("Write '%s' buf: %p, sz: %zu, off: %zd\n",
 			path, buf, sz, off);
 
-	return sz;
+	return RET_UNLOCK(&en->lock, sz);
 }
 
 int fs_read(const char *path, char *buf, size_t sz, off_t off,
 		struct fuse_file_info *fi) {
 	(void)fi;
 
+	RLOCK(&fs_info.lock);
+
 	ASSERT(off >= 0);
 
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	RLOCK(&en->lock);
+	UNLOCK(&fs_info.lock);
 
 	if (en->type != FS_FILE)
-		return -EBADF;
+		return RET_UNLOCK(&en->lock, -EBADF);
 
 	struct fs_file *fl = &en->f;
 
 	ASSERT(off >= 0);
 	if ((size_t)off > fl->len)
-		return EOF;
+		return RET_UNLOCK(&en->lock, EOF);
 
 	if (fl->len < off + sz) {
 		sz = fl->len - off;
@@ -457,23 +497,30 @@ int fs_read(const char *path, char *buf, size_t sz, off_t off,
 
 	en->st.st_atim = get_time();
 
-	return sz;
+	return RET_UNLOCK(&en->lock, sz);
 }
 
 int fs_unlink(const char *path) {
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *dir = fs_find_parent(&fs_info.fs_root, path);
 	if (!dir)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	WLOCK(&dir->lock);
+	UNLOCK(&fs_info.lock);
 
 	char *fname = xbasename(path);
 	struct fs_entry *en = fs_get_entry(dir, fname);
 	free(fname); /* NOTE: xbasename uses malloc, not XMALLOC */
 
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&dir->lock, -ENOENT);
+
+	WLOCK(&en->lock);
 
 	if (en->type != FS_FILE && en->type != FS_SYMLINK)
-		return -EBADF;
+		return UNLOCK(&en->lock), RET_UNLOCK(&dir->lock, -EBADF);
 
 	if (en->type == FS_FILE)
 		fs_info.used -= en->f.len;
@@ -486,43 +533,57 @@ int fs_unlink(const char *path) {
 	XFREE(ptr);
 
 	fs_delete_entry(dir, en);
+	UNLOCK(&en->lock);
 	XFREE(en);
 	fs_info.files--;
 
-	return 0;
+	return RET_UNLOCK(&dir->lock, 0);
 }
 
 int fs_rmdir(const char *path) {
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *dir = fs_find_parent(&fs_info.fs_root, path);
 	if (!dir)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	WLOCK(&dir->lock);
+	UNLOCK(&fs_info.lock);
 
 	char *fname = xbasename(path);
 	struct fs_entry *en = fs_get_entry(dir, fname);
 	free(fname); /* NOTE: xbasename uses malloc, not XMALLOC */
 
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&dir->lock, -ENOENT);
+
+	WLOCK(&en->lock);
 
 	if (en->type != FS_DIR)
-		return -ENOTDIR;
+		return UNLOCK(&en->lock), RET_UNLOCK(&dir->lock, -ENOTDIR);
 
 	fs_delete_entry(dir, en);
+	UNLOCK(&en->lock);
 	XFREE(en);
 	fs_info.files--;
 
-	return 0;
+	return RET_UNLOCK(&dir->lock, 0);
 }
 
 int fs_mkdir(const char *path, mode_t mode) {
+	RLOCK(&fs_info.lock);
+
 	mode |= S_IFDIR;
 
 	struct fs_entry *dir = fs_find_parent(&fs_info.fs_root, path);
 	if (!dir)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	WLOCK(&dir->lock);
+	UNLOCK(&fs_info.lock);
 
 	if (dir->type != FS_DIR)
-		return -ENOTDIR;
+		return RET_UNLOCK(&dir->lock, -ENOTDIR);
 
 	char *fname = xbasename(path);
 
@@ -537,63 +598,83 @@ int fs_mkdir(const char *path, mode_t mode) {
 
 	DEBUG_LOG("Mkdir '%s', %o, %p, %p\n", path, mode, dir, en);
 
-	return 0;
+	return RET_UNLOCK(&dir->lock, 0);
 }
 
 int fs_truncate(const char *path, off_t len, struct fuse_file_info *fi) {
 	(void)fi;
+
+	RLOCK(&fs_info.lock);
 
 	ASSERT(len >= 0);
 
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	WLOCK(&en->lock);
+	UNLOCK(&fs_info.lock);
 
 	if (en->type != FS_FILE)
-		return -EBADF;
+		return RET_UNLOCK(&en->lock, -EBADF);
 
 	if (fs_resize_file(en, len))
-		return -ENOSPC;
+		return RET_UNLOCK(&en->lock, -ENOSPC);
 
 	struct timespec now = get_time();
 	en->st.st_atim = now;
 	en->st.st_mtim = now;
 
-	return 0;
+	return RET_UNLOCK(&en->lock, 0);
 }
 
 int fs_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {
 	(void)fi;
 
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
 
 	en->st.st_mode = mode;
 
-	return 0;
+	WLOCK(&en->lock);
+	UNLOCK(&fs_info.lock);
+
+	return RET_UNLOCK(&en->lock, 0);
 }
 
 int fs_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {
 	(void)fi;
 
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	WLOCK(&en->lock);
+	UNLOCK(&fs_info.lock);
 
 	en->st.st_uid = uid;
 	en->st.st_gid = gid;
 
-	return 0;
+	return RET_UNLOCK(&en->lock, 0);
 }
 
 int fs_symlink(const char *target, const char *path) {
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *dir = fs_find_parent(&fs_info.fs_root, path), *file = NULL;
 	if (!dir)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	WLOCK(&dir->lock);
+	UNLOCK(&fs_info.lock);
 
 	{
 		char *filen = xbasename(path);
@@ -615,32 +696,42 @@ int fs_symlink(const char *target, const char *path) {
 	fs_add_entry(dir, file);
 	fs_info.files++;
 
-	return 0;
+	return RET_UNLOCK(&dir->lock, 0);
 }
 
 int fs_readlink(const char *path, char *buf, size_t bufsz) {
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	RLOCK(&en->lock);
+	UNLOCK(&fs_info.lock);
 
 	if (en->type != FS_SYMLINK)
-		return -EBADF;
+		return RET_UNLOCK(&en->lock, -EBADF);
 
 	snprintf(buf, bufsz, "%s", en->f.buf);
 
-	return 0;
+	return RET_UNLOCK(&en->lock, 0);
 }
 
 int fs_utimens(const char *path, const struct timespec tv[2],
 		struct fuse_file_info *fi) {
 	(void)fi;
 
+	RLOCK(&fs_info.lock);
+
 	DEBUG_LOG("UTIMENS %lu.%lu %lu.%lu\n", tv[0].tv_sec, tv[0].tv_nsec,
 			tv[1].tv_sec, tv[1].tv_nsec);
 
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	WLOCK(&en->lock);
+	UNLOCK(&fs_info.lock);
 
 	struct timespec now = get_time();
 
@@ -654,15 +745,20 @@ int fs_utimens(const char *path, const struct timespec tv[2],
 	else if (tv[1].tv_nsec != UTIME_OMIT)
 		en->st.st_mtim = tv[1];
 
-	return 0;
+	return RET_UNLOCK(&en->lock, 0);
 }
 
 int fs_statfs(const char *path, struct statvfs *stat) {
 	(void)path;
 
+	RLOCK(&fs_info.lock);
+
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, path);
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	RLOCK(&en->lock);
+	UNLOCK(&fs_info.lock);
 
 	size_t ublocks = DIVRNDUP(fs_info.used, FS_BSIZE);
 	size_t nblocks = fs_info.max_allowed
@@ -684,7 +780,7 @@ int fs_statfs(const char *path, struct statvfs *stat) {
 		.f_namemax = MAX_PATH_SEG,
 	};
 
-	return 0;
+	return RET_UNLOCK(&en->lock, 0);
 }
 
 int fs_rename(const char *old, const char *new, unsigned int flags) {
@@ -694,17 +790,24 @@ int fs_rename(const char *old, const char *new, unsigned int flags) {
 	 * of itself.
 	 */
 
+	RLOCK(&fs_info.lock);
+
 	DEBUG_LOG("RENAME %s -> %s\n", old, new);
 
 	struct fs_entry *en = fs_find_entry(&fs_info.fs_root, old);
 	if (!en)
-		return -ENOENT;
+		return RET_UNLOCK(&fs_info.lock, -ENOENT);
+
+	WLOCK(&en->lock);
+	UNLOCK(&fs_info.lock);
 
 	struct fs_entry *oldparent = en->parent;
 
+	WLOCK(&oldparent->lock);
+
 	struct fs_entry *newparent = fs_find_parent(&fs_info.fs_root, new);
 	if (!newparent)
-		return -ENOENT;
+		return UNLOCK(&oldparent->lock), RET_UNLOCK(&en->lock, -ENOENT);
 
 	char *fname = NULL;
 
@@ -714,25 +817,26 @@ int fs_rename(const char *old, const char *new, unsigned int flags) {
 	if (flags) {
 		if (flags & RENAME_NOREPLACE) {
 			if (newf)
-				return -EEXIST;
+				return UNLOCK(&oldparent->lock), RET_UNLOCK(&en->lock, -EEXIST);
 
 		} else if (flags & RENAME_EXCHANGE) {
 			if (!newf)
-				return -ENOENT;
+				return UNLOCK(&oldparent->lock), RET_UNLOCK(&en->lock, -ENOENT);
 
 			fs_delete_entry(oldparent, en);
 			fs_delete_entry(newparent, newf);
 			fs_add_entry(newparent, en);
 			fs_add_entry(oldparent, newf);
 
-			return 0;
+			return UNLOCK(&oldparent->lock), RET_UNLOCK(&en->lock, 0);
 		} else {
-			return -EINVAL;
+			return UNLOCK(&oldparent->lock), RET_UNLOCK(&en->lock, -EINVAL);
 		}
 	}
 
 	if (newf)
-		fs_delete_entry(newparent, newf), fs_free_entry(newf), XFREE(newf);
+		fs_delete_entry(newparent, newf), fs_free_entry(newf),
+			UNLOCK(&newf->lock), XFREE(newf);
 
 	fs_delete_entry(oldparent, en);
 
@@ -741,7 +845,7 @@ int fs_rename(const char *old, const char *new, unsigned int flags) {
 
 	fs_add_entry(newparent, en);
 
-	return 0;
+	return RET_UNLOCK(&oldparent->lock, 0);
 }
 
 // int fs_fallocate(const char *path, int mode, off_t offset, off_t len,
