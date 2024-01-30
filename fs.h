@@ -1,14 +1,14 @@
 #ifndef FS_H
 #define FS_H
 
-#define FUSE_USE_VERSION 31
+#define FUSE_USE_VERSION 34
 
 #include <time.h>
-#include <fuse.h>
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
 #include <sys/stat.h>
+#include <fuse3/fuse.h>
 
 #include "uthash/src/uthash.h"
 
