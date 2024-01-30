@@ -23,11 +23,11 @@
 
 void *xmalloc_(size_t sz, char *file, int line) {
 	void *ret = malloc(sz);
-	memset(ret, 0x00, sz); /* NOTE dbg */
 	if (!ret)
 		fprintf(stderr, "%s:%d: xmalloc: Error allocating memory\n", file,
 				line), exit(1);
 
+	memset(ret, 0x00, sz); /* NOTE dbg */
 	return ret;
 }
 #ifndef XMALLOC
